@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+
+"""
+    anonftp - Insecure anonymous FTP server based on pyftpdlib.
+    Gives full anonymous access (read/write) to the root directory.
+    Can be very useful and convenient in the DMZ, but not on the Internet.
+
+    Copyright (C) 2015 Vadim Kuznetsov <vimusov@gmail.com>
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+
+import os
+import pwd
+import signal
+import logging
+import argparse
+import warnings
+from pyftpdlib.servers import FTPServer
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.authorizers import DummyAuthorizer
+
+
+def on_signal(*unused_args):
+    raise SystemExit()
+
+
+def main():
+    arg_parser = argparse.ArgumentParser(description='Insecure anonymous FTP server')
+    arg_parser.add_argument('-d', '--debug', action='store_true', help='enable debug mode')
+    arg_parser.add_argument('-a', '--address', default='0.0.0.0', help='listen on address (0.0.0.0 by default)')
+    arg_parser.add_argument('-p', '--port', default=2121, type=int, help='listen on port (2121 by default)')
+    arg_parser.add_argument('-u', '--user', default=None, help='run program under unprivileged user account')
+    arg_parser.add_argument('-r', '--root', default=os.getcwd(), help='root directory (current directory by default)')
+    args = arg_parser.parse_args()
+
+    logging.raiseExceptions = False
+    logging.getLogger('pyftpdlib').addHandler(logging.NullHandler())
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG if args.debug else logging.ERROR)
+
+    authorizer = DummyAuthorizer()
+    # pyftpdlib raises a warning when you are giving write access to the anonymous; suppress this warning
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        authorizer.add_anonymous(args.root, perm=DummyAuthorizer.write_perms + DummyAuthorizer.read_perms)
+    handler = FTPHandler
+    handler.authorizer = authorizer
+    server = FTPServer((args.address, args.port), handler)
+
+    # drop privileges
+    user_name = args.user
+    if user_name is not None:
+        user_account = pwd.getpwnam(user_name)
+        uid, gid = user_account.pw_uid, user_account.pw_gid
+        os.initgroups(user_name, gid)
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+
+    # handle signals gently
+    for signo in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signo, on_signal)
+
+    try:
+        server.serve_forever(handle_exit=False)
+    except (SystemExit, KeyboardInterrupt):
+        server.close_all()
+
+
+if __name__ == '__main__':
+    main()
